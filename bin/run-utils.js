@@ -85,9 +85,7 @@ function isErrorString(line) {
 var GARBAGE = [
   /\[JavaScript Warning: "TypeError: "[\w\d]+" is read-only"\]/,
   /JavaScript strict warning: /,
-  /\#\#\#\!\!\! \[Child\]\[DispatchAsyncMessage\]/,
-  /JavaScript strict warning: resource:\/\/\/modules\/sessionstore\/SessionStore\.jsm/,
-  /JavaScript strict warning: resource:\/\/gre\/components\/nsSearchService\.js/
+  /\#\#\#\!\!\! \[Child\]\[DispatchAsyncMessage\]/
 ];
 
 /**
@@ -130,7 +128,6 @@ function writeLog(data, type) {
  *   - `binary` path to Firefox binary to use
  *   - `profile` path to profile or profile name to use
  *   - `binaryArgs` binary arguments to pass into Firefox, split up by spaces
- *   - `verbose` whether or not Firefox should print all of stdout
  * @return {Promise}
  */
 function runFirefox(options) {
@@ -166,18 +163,15 @@ function runFirefox(options) {
 
       firefox.stderr.setEncoding("utf8");
       firefox.stderr.on("data", function(data) {
-        // Only print out annoying warnings if verbose is on
-        if (/^\s*System JS : WARNING/.test(data) && options.verbose) {
+        if (/^\s*System JS : WARNING/.test(data)) {
           writeLog(data, "warn");
-        } else if (options.verbose) {
-          // Otherwise if verbose is on, and we find something, probably a serious error.
+        } else {
           writeLog(data, "error");
         }
       });
 
       // Many errors in addons are printed to stdout instead of stderr;
-      // we should check for errors here and print them out regardless of
-      // verbose status
+      // we should check for errors here and print them out.
       firefox.stdout.setEncoding("utf8");
       firefox.stdout.on("data", function(data) {
         if (isErrorString(data)) {

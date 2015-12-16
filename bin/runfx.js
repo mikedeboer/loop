@@ -13,6 +13,9 @@ var Rimraf = require("rimraf");
 var Util = require("./run-utils");
 var Version = require("../package.json").version;
 var When = require("when");
+var WhenNode = require("when/node");
+// Transform mkdirp() to use promises.
+var Mkdirp = WhenNode.lift(require("mkdirp"));
 
 var DEFAULT_PROFILE = "loop-dev";
 
@@ -43,6 +46,18 @@ function ensureRemoved(path) {
   });
 }
 
+function onExit() {
+  var i = 0;
+  var errLen = arguments.length;
+  for (; i < errLen; ++i) {
+    console.error(arguments[i].message || arguments[i]);
+  }
+
+  if (errLen) {
+    process.exit(1);
+  }
+}
+
 var addonSourceDir = Path.normalize(Path.join(__dirname, "..", "built", "add-on"));
 Fs.stat(addonSourceDir).then(function(sourceStat) {
   if (!sourceStat.isDirectory()) {
@@ -56,33 +71,30 @@ Fs.stat(addonSourceDir).then(function(sourceStat) {
   Util.getProfilePath(profile).then(function(profilePath) {
     // Since we've got the profile path now, we can create the symlink in the
     // profile directory IF it doesn't exist yet.
-    var addonTargetDir = Path.join(profilePath, "extensions", "loop@mozilla.org");
-    return ensureRemoved(addonTargetDir).then(function() {
-      // This should fail at a certain point, because we don't want the add-on
-      // directory to exist.
-      return Fs.symlink(addonSourceDir, addonTargetDir).then(function() {
-        console.log("Symlinked add-on at '" + addonTargetDir + "'");
+    var extensionsDir = Path.join(profilePath, "extensions");
+    return Mkdirp(extensionsDir).then(function() {
+      var addonTargetDir = Path.join(extensionsDir, "loop@mozilla.org");
+      return ensureRemoved(addonTargetDir).then(function() {
+        // This should fail at a certain point, because we don't want the add-on
+        // directory to exist.
+        return Fs.symlink(addonSourceDir, addonTargetDir).then(function() {
+          console.log("Symlinked add-on at '" + addonTargetDir + "'");
 
-        // Add-on should be in the correct place, so now we can run Firefox.
-        return Util.runFirefox(Commander).then(function() {
-          throw "Firefox terminated properly";
-        }).catch(function() {
-          console.log("Removing symlink");
-          Fs.unlink(addonTargetDir);
+          // Add-on should be in the correct place, so now we can run Firefox.
+          return Util.runFirefox(Commander).then(function() {
+            throw "Firefox terminated properly";
+          }).catch(function() {
+            console.log("Removing symlink");
+            Fs.unlink(addonTargetDir);
+          });
         });
-      });
-    }).catch(function(err) {
-      console.error(err);
-      process.exit(1);
-    });
+      }).catch(onExit);
+    }).catch(onExit);
   }).catch(function() {
     // No valid profile path found, so bail out.
-    console.error("ERROR! Could not find a suitable profile. Please create a new profile '" +
+    onExit("ERROR! Could not find a suitable profile. Please create a new profile '" +
       profile + "' and re-run this script.");
-    process.exit(1);
   });
 }).catch(function(err) {
-  console.error(err.message || err);
-  console.error("ERROR! Please run `make build` first!");
-  process.exit(1);
+  onExit(err, "ERROR! Please run `make build` first!");
 });
