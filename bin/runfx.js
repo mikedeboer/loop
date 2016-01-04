@@ -59,42 +59,40 @@ function onExit() {
 }
 
 var addonSourceDir = Path.normalize(Path.join(__dirname, "..", "built", "add-on"));
+var profile = Commander.profile || DEFAULT_PROFILE;
+var extensionsDir, addonTargetDir;
 Fs.stat(addonSourceDir).then(function(sourceStat) {
   if (!sourceStat.isDirectory()) {
     throw "Not a directory";
   }
-
-  // Add-on directory exists, so now we can create the symlink in the profile
-  // directory and run Firefox.
-  var profile = Commander.profile || DEFAULT_PROFILE;
-
-  Util.getProfilePath(profile).then(function(profilePath) {
-    // Since we've got the profile path now, we can create the symlink in the
-    // profile directory IF it doesn't exist yet.
-    var extensionsDir = Path.join(profilePath, "extensions");
-    return Mkdirp(extensionsDir).then(function() {
-      var addonTargetDir = Path.join(extensionsDir, "loop@mozilla.org");
-      return ensureRemoved(addonTargetDir).then(function() {
-        // This should fail at a certain point, because we don't want the add-on
-        // directory to exist.
-        return Fs.symlink(addonSourceDir, addonTargetDir).then(function() {
-          console.log("Symlinked add-on at '" + addonTargetDir + "'");
-
-          // Add-on should be in the correct place, so now we can run Firefox.
-          return Util.runFirefox(Commander).then(function() {
-            throw "Firefox terminated properly";
-          }).catch(function() {
-            console.log("Removing symlink");
-            Fs.unlink(addonTargetDir);
-          });
-        });
-      }).catch(onExit);
-    }).catch(onExit);
-  }).catch(function() {
-    // No valid profile path found, so bail out.
-    onExit("ERROR! Could not find a suitable profile. Please create a new profile '" +
-      profile + "' and re-run this script.");
-  });
 }).catch(function(err) {
   onExit(err, "ERROR! Please run `make build` first!");
-});
+}).then(function() {
+  return Util.getProfilePath(profile);
+}).catch(function() {
+  // No valid profile path found, so bail out.
+  onExit("ERROR! Could not find a suitable profile. Please create a new profile '" +
+    profile + "' and re-run this script.");
+}).then(function(profilePath) {
+  // Since we've got the profile path now, we can create the symlink in the
+  // profile directory IF it doesn't exist yet.
+  extensionsDir = Path.join(profilePath, "extensions");
+  addonTargetDir = Path.join(extensionsDir, "loop@mozilla.org");
+  return Mkdirp(extensionsDir);
+}).then(function() {
+  return ensureRemoved(addonTargetDir);
+}).then(function() {
+  // This should fail at a certain point, because we don't want the add-on
+  // directory to exist.
+  return Fs.symlink(addonSourceDir, addonTargetDir);
+}).then(function() {
+  console.log("Symlinked add-on at '" + addonTargetDir + "'");
+
+  // Add-on should be in the correct place, so now we can run Firefox.
+  return Util.runFirefox(Commander).catch(function() {
+    // Ignore run Firefox issues and continue to cleanup
+  }).then(function() {
+    console.log("Removing symlink");
+    return Fs.unlink(addonTargetDir);
+  });
+}).catch(onExit);
