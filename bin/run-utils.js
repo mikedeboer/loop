@@ -127,7 +127,7 @@ function writeLog(data, type) {
  * @param {Object} options
  *   - `binary` path to Firefox binary to use
  *   - `profile` path to profile or profile name to use
- *   - `binaryArgs` binary arguments to pass into Firefox, split up by spaces
+ *   - `binaryArgs` binary arguments Array to pass into Firefox
  * @return {Promise}
  */
 function runFirefox(options) {
@@ -136,7 +136,7 @@ function runFirefox(options) {
 
     FxRunner({
       "binary": options.binary,
-      "foreground": true,
+      "foreground": ("foreground" in options) ? options.foreground : true,
       "profile": options.profile,
       env: Extend({}, process.env, FX_ENV),
       verbose: true,
@@ -184,3 +184,195 @@ function runFirefox(options) {
   });
 }
 exports.runFirefox = runFirefox;
+
+var currentSample = null;
+var currentSampleMap = null;
+var prefsRE = /^user_pref\(['"](.*)["'],\s*['"]?(.*)["']?\)/;
+
+function parsePrefValue(value) {
+  if (/^[\d]+$/.test(value)) {
+    return parseInt(value, 10);
+  }
+  if (value === "true") {
+    return true;
+  }
+  if (value === "false") {
+    return false;
+  }
+  return value;
+}
+
+function takePrefsSample(profilePath) {
+  currentSample = [];
+  currentSampleMap = {};
+
+  return When.promise(function(resolve, reject) {
+    var prefsFile = Path.join(profilePath, "user.js");
+    Fs.exists(prefsFile).then(function(exists) {
+      if (!exists) {
+        resolve();
+        return;
+      }
+
+      Fs.readFile(prefsFile, "utf8").then(function(content) {
+        currentSample = content.split("\n").map(function(line) {
+          var found = line.match(prefsRE);
+          if (found) {
+            var prefName = found[1];
+            var prefValue = parsePrefValue(found[2]);
+
+            // Check for JSON values:
+            var parts = prefName.split(/['"],\s*['"]/);
+            if (parts.length > 1) {
+              prefName = parts.shift();
+              prefValue = parts.join("\",\"") + prefValue;
+            }
+
+            currentSampleMap[prefName] = prefValue;
+            // Sample the name only, to be able to reference it later when we
+            // write the preferences back to file.
+            return prefName;
+          }
+          return line;
+        });
+
+        // Clear trailing empty lines.
+        var lastLine = currentSample.pop();
+        while (!lastLine.replace(/^[\s\n\t\r]+$/, "")) {
+          lastLine = currentSample.pop();
+        }
+        if (lastLine) {
+          currentSample.push(lastLine);
+        }
+
+        resolve();
+      }).catch(reject);
+    });
+  });
+}
+
+function prefValueToString(val) {
+  switch (typeof val) {
+    case "boolean":
+      return val ? "true" : "false";
+    case "number":
+      return "" + val;
+    case "string":
+      return "\"" + val.replace(/[^\\]{0}"/g, "\\\"") + "\"";
+    default:
+      return val;
+  }
+}
+
+function getUserPrefLine(name, value) {
+  return "user_pref(\"" + name + "\", " + prefValueToString(value) + ");";
+}
+
+function writeUserPrefs(profilePath, userPrefs) {
+  if (!userPrefs) {
+    userPrefs = currentSample || [];
+  }
+
+  var prefsFile = Path.join(profilePath, "user.js");
+  return Fs.writeFile(prefsFile, userPrefs.join("\n") + "\n", "utf8");
+}
+
+function setUserPrefs(profilePath, prefs) {
+  return takePrefsSample(profilePath)
+    .then(function() {
+      var seen = {};
+      var userPrefs = currentSample.map(function(entry) {
+        if (entry in currentSampleMap) {
+          // We encountered a line containing a pref.
+          var prefValue = currentSampleMap[entry];
+          if (entry in prefs) {
+            // This line of the prefs needs to be overwritten.
+            prefValue = prefs[entry];
+            seen[entry] = 1;
+          }
+
+          return getUserPrefLine(entry, prefValue);
+        }
+
+        return entry;
+      });
+
+      Object.getOwnPropertyNames(prefs).forEach(function(entry) {
+        if (seen[entry]) {
+          // An existing pref line has been overwritten above.
+          return;
+        }
+
+        userPrefs.push(getUserPrefLine(entry, prefs[entry]));
+      });
+
+      return writeUserPrefs(profilePath, userPrefs);
+    });
+}
+
+exports.setUserPrefs = setUserPrefs;
+
+function restoreUserPrefs(profilePath) {
+  return writeUserPrefs(profilePath);
+}
+
+exports.restoreUserPrefs = restoreUserPrefs;
+
+var DEFAULT_PREFS = {
+  "browser.displayedE10SNotice": 4,
+  "browser.EULA.override": true,
+  "browser.EULA.3.accepted": true,
+  "browser.shell.skipDefaultBrowserCheck": true,
+  "general.warnOnAboutConfig": false,
+  "security.fileuri.origin_policy": 3,
+  "security.fileuri.strict_origin_policy": false,
+  "security.warn_entering_secure": false,
+  "security.warn_entering_secure.show_once": false,
+  "security.warn_entering_weak": false,
+  "security.warn_entering_weak.show_once": false,
+  "security.warn_leaving_secure": false,
+  "security.warn_leaving_secure.show_once": false,
+  "security.warn_submit_insecure": false,
+  "security.warn_viewing_mixed": false,
+  "security.warn_viewing_mixed.show_once": false,
+  "toolkit.telemetry.reportingpolicy.firstRun": false
+};
+
+/**
+ * Run Firefox to create a fresh, empty profile and resolve the promise with the
+ * resulting path to that profile.
+ *
+ * @param {Object} options
+ *   - `binary` path to Firefox binary to use
+ *   - `profile` path to profile or profile name to use
+ *   - `binaryArgs` binary arguments Array to pass into Firefox
+ * @return {Promise}
+ */
+function createEmptyProfile(options) {
+  return When.promise(function(resolve, reject) {
+    var profilePath;
+    // Make sure we don't mutate the options object here.
+    options = Object.create(options);
+    var profile = options.profile;
+    // Unset the profile to run the browser with, because we don't need it.
+    options.profile = null;
+    // Magic command line argument that will yield a fresh profile.
+    options.binaryArgs = ["-CreateProfile", profile];
+    options.foreground = false;
+    return runFirefox(options)
+      .then(function() {
+        return getProfilePath(profile);
+      })
+      .then(function(path) {
+        profilePath = path;
+        // Put the userprefs in there.
+        return setUserPrefs(profilePath, DEFAULT_PREFS);
+      })
+      .then(function() {
+        resolve(profilePath);
+      })
+      .catch(reject);
+  });
+}
+
+exports.createEmptyProfile = createEmptyProfile;

@@ -22,7 +22,7 @@ var DEFAULT_PROFILE = "loop-dev";
 Commander
   .version(Version)
   .option("-b, --binary <path>", "Path of Firefox binary to use.")
-  .option("-p, --profile <path>", "Path or name of Firefox profile to use.")
+  .option("-p, --profile <path>", "Path or name of Firefox profile to use.", DEFAULT_PROFILE)
   .option("--binary-args <CMDARGS>", "Pass additional arguments into Firefox.")
   .parse(process.argv);
 
@@ -59,8 +59,7 @@ function onExit() {
 }
 
 var addonSourceDir = Path.normalize(Path.join(__dirname, "..", "built", "add-on"));
-var profile = Commander.profile || DEFAULT_PROFILE;
-var extensionsDir, addonTargetDir;
+var profilePath, extensionsDir, addonTargetDir;
 Fs.stat(addonSourceDir).then(function(sourceStat) {
   if (!sourceStat.isDirectory()) {
     throw "Not a directory";
@@ -68,12 +67,13 @@ Fs.stat(addonSourceDir).then(function(sourceStat) {
 }).catch(function(err) {
   onExit(err, "ERROR! Please run `make build` first!");
 }).then(function() {
-  return Util.getProfilePath(profile);
+  return Util.getProfilePath(Commander.profile);
 }).catch(function() {
-  // No valid profile path found, so bail out.
-  onExit("ERROR! Could not find a suitable profile. Please create a new profile '" +
-    profile + "' and re-run this script.");
-}).then(function(profilePath) {
+  console.log("Creating default profile '" + DEFAULT_PROFILE + "'");
+  Commander.profile = DEFAULT_PROFILE;
+  return Util.createEmptyProfile(Commander);
+}).then(function(path) {
+  profilePath = path;
   // Since we've got the profile path now, we can create the symlink in the
   // profile directory IF it doesn't exist yet.
   extensionsDir = Path.join(profilePath, "extensions");
@@ -88,6 +88,12 @@ Fs.stat(addonSourceDir).then(function(sourceStat) {
 }).then(function() {
   console.log("Symlinked add-on at '" + addonTargetDir + "'");
 
+  // Make sure that the right prefs have been set to aid in Hello developement.
+  return Util.setUserPrefs(profilePath, {
+    "loop.debug.loglevel": "Debug",
+    "xpinstall.signatures.required": false
+  });
+}).then(function() {
   // Add-on should be in the correct place, so now we can run Firefox.
   return Util.runFirefox(Commander).catch(function() {
     // Ignore run Firefox issues and continue to cleanup
