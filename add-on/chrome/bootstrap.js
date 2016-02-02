@@ -841,7 +841,9 @@ function loadDefaultPrefs() {
 /**
  * Called when the add-on is started, e.g. when installed or when Firefox starts.
  */
-function startup() {
+function deferredStartup() {
+  Services.obs.removeObserver(deferredStartup, "browser-ui-startup-complete");
+
   loadDefaultPrefs();
 
   createLoopButton();
@@ -885,6 +887,11 @@ function startup() {
     styleSheetService.loadAndRegisterSheet(styleSheetURI,
                                            styleSheetService.AUTHOR_SHEET);
   }
+}
+
+function startup() {
+  // Boot things only when the main browser UI has been started.
+  Services.obs.addObserver(deferredStartup, "browser-ui-startup-complete", false);
 }
 
 /**
